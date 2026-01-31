@@ -24,17 +24,19 @@ def main(
     url: str = typer.Option("https://huggingface.co/papers", "--url", "-u", help="URL to scrape"),
     prefs_file: str = typer.Option("./userprefs.txt", "--prefs", "-i", help="User preferences file"),
     output_file: str = typer.Option("./report.txt", "--output", "-o", help="Output report file"),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", "-t", help="Maximum tokens for LLM responses"),
+    max_iters:int = typer.Option(5, "--max-iters", "-n", help="Maximum iterations for the agent")
 ):
     """
     Curate papers using a ReAct agent based on user preferences.
     """
     if not custom_provider:
-        lm = dspy.LM(model)
+        lm = dspy.LM(model, max_tokens=max_tokens)
     else:
-        lm = dspy.LM(model, api_base=custom_provider)
+        lm = dspy.LM(model, api_base=custom_provider, max_tokens=max_tokens)
     dspy.configure(lm=lm)
     scraper_instance = SCRAPER_REGISTRY[scraper](url)
-    with agent.TaskScaffold(prefs_file, output_file, agent.new_instance()) as scaffold:
+    with agent.TaskScaffold(prefs_file, output_file, agent.new_instance(max_iters=max_iters)) as scaffold:
         scaffold.curate(scraper_instance)
 
 if __name__ == "__main__":

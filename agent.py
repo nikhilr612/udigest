@@ -126,9 +126,16 @@ class PaperCurationService(dspy.Signature):
     paper_decision: bool = dspy.OutputField(desc="Whether the paper is relevant to the user's preferences.")
     paper_remarks: str = dspy.OutputField(desc="Brief remarks on the paper, including related literature survey and evaluation.")
 
-def new_instance() -> dspy.ReAct:
+
+def new_instance(max_iters: int = 5) -> dspy.ReAct:
+    """
+    Make a new ReAct agent instance.
+    :param max_iters: Maximum iterations for the agent. Default is 5.
+    :return: A ReAct agent instance configured for paper curation.
+    """
     return dspy.ReAct(
         PaperCurationService,
+        max_iters=5,
         tools=[
             arxiv_fetch_most_recent, arxiv_fetch_most_relevant, 
             wikipedia_term_search, 
