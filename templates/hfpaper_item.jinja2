@@ -1,0 +1,15 @@
+ID: {{ paper.id }}
+
+Title: {{ paper.title }}
+Upvotes: {{ paper.upvotes }}
+{% if paper.organization %}
+Organization: {{ paper.organization.name }}
+{% endif %}
+Authors:
+{% for author in paper.authors %} -{{ author.name.strip() }}
+{% endfor %}
+Summary:
+{{ paper.summary }}
+Published On: {{ paper.publishedAt }}
+Repo: {{ paper.githubRepo | default('?') }}
+Github Stars: {{ paper.githubStars | default('?') }}
