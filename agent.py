@@ -4,6 +4,7 @@ A simple ReAct agent to briefly evaluate Hugging Face papers.
 
 from io import TextIOWrapper
 import time
+from typing import Self
 import arxiv
 import wikipedia
 from ddgs import DDGS
@@ -13,6 +14,7 @@ import dspy
 
 client = arxiv.Client()
 arxiv_template = jenv.get_template('arxiv_item.jinja2')
+trajectory_template = jenv.get_template('trajectory.jinja2')
 
 def _arxiv_generic_search(query: str, k: int, sort_criterion: arxiv.SortCriterion, sort_order: arxiv.SortOrder) -> list[str]:
     search = arxiv.Search(
@@ -151,24 +153,34 @@ class TaskScaffold:
     output_path: str
     agent: dspy.ReAct
     output_file: TextIOWrapper | None = None
+    log_trajectory: bool = False
+    trajectory_file: TextIOWrapper | None = None
 
-    def __init__(self, user_prefs_path: str, output_path: str, agent: dspy.ReAct) -> None:
+    def __init__(self, user_prefs_path: str, output_path: str, agent: dspy.ReAct, log_trajectory: bool = False) -> None:
         with open(user_prefs_path, 'r', encoding='utf-8') as f:
             self.user_prefs = f.read()
         self.output_path = output_path
         self.output_file = None
         self.agent = agent
+        self.log_trajectory = log_trajectory
+        self.trajectory_file = None
 
-    def __enter__(self) -> "TaskScaffold":
-        """Open the output file for writing."""
+    def __enter__(self) -> Self:
+        """Open the output file and trajectory file (if enabled) for writing."""
         self.output_file = open(self.output_path, 'w', encoding='utf-8')
+        if self.log_trajectory:
+            trajectory_path = self.output_path.rsplit('.', 1)[0] + '_trajectory.md'
+            self.trajectory_file = open(trajectory_path, 'w', encoding='utf-8')
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Close the output file and free up resources."""
+        """Close the output files and free up resources."""
         if self.output_file:
             self.output_file.close()
             self.output_file = None
+        if self.trajectory_file:
+            self.trajectory_file.close()
+            self.trajectory_file = None
 
     def curate(self, papers: DetailScraper) -> None:
         """
@@ -182,14 +194,30 @@ class TaskScaffold:
 
         paper_texts = papers.scrape()
         for idx, paper_text in tqdm(enumerate(paper_texts), total=len(paper_texts), desc="Curating papers"):
-            result = self.agent(
+            result: dspy.Prediction = self.agent(
                 user_preference=self.user_prefs,
                 paper_information=paper_text,
             )
+            
+            # Log trajectory if enabled
+            if self.log_trajectory and self.trajectory_file and hasattr(result, 'trajectory'):
+                num_steps = sum(1 for key in result.trajectory.keys() if key.startswith('thought_'))
+                trajectory_md = trajectory_template.render(
+                    trajectory=result.trajectory,
+                    paper_idx=idx,
+                    total_papers=len(paper_texts),
+                    final_decision=result.paper_decision,
+                    final_remarks=result.paper_remarks,
+                    num_steps=num_steps
+                )
+                self.trajectory_file.write(trajectory_md)
+                self.trajectory_file.write("\n\n")
+                self.trajectory_file.flush()
+            
             if result.paper_decision:
-                self.output_file.write(f"--- Paper {idx+1} / {len(paper_texts)} ---\n")
-                self.output_file.write(f"Information:\n{paper_text}\n\n")
-                self.output_file.write(f"Remarks:\n{result.paper_remarks}\n")
+                self.output_file.write(f"# Paper {idx+1} / {len(paper_texts)}\n")
+                self.output_file.write(f"## Information:\n{paper_text}\n\n")
+                self.output_file.write(f"## Remarks:\n{result.paper_remarks}\n")
                 self.output_file.write("\n\n")
             print("debug:", result)
         print(f"Curation completed. Results saved to {self.output_path}")

@@ -1,0 +1,20 @@
+# Trajectory: Paper {{ paper_idx + 1 }} / {{ total_papers }}
+
+Decision: {% if final_decision %} Relevant{% else %} Not Relevant{% endif %} | Steps: {{ num_steps }}
+{% for idx in range(num_steps) %}
+1. {{ trajectory['thought_' ~ idx] }}
+{%- if 'tool_name_' ~ idx in trajectory %}
+   Tool: `{{ trajectory['tool_name_' ~ idx] }}`
+
+   ```python
+   {{ trajectory['tool_args_' ~ idx] }}
+   ```
+
+   ```
+   {{ trajectory['observation_' ~ idx] }}
+   ```
+{%- endif %}
+{% endfor %}
+{{ final_remarks }}
+
+
