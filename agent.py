@@ -3,7 +3,6 @@ A simple ReAct agent to briefly evaluate Hugging Face papers.
 """
 
 from io import TextIOWrapper
-import time
 from typing import Self
 import arxiv
 import wikipedia
@@ -13,10 +12,51 @@ from scrapers import DetailScraper, jenv
 import dspy
 
 client = arxiv.Client()
-arxiv_template = jenv.get_template('arxiv_item.jinja2')
-trajectory_template = jenv.get_template('trajectory.jinja2')
+arxiv_template = jenv.get_template("arxiv_item.jinja2")
+trajectory_template = jenv.get_template("trajectory.jinja2")
 
-def _arxiv_generic_search(query: str, k: int, sort_criterion: arxiv.SortCriterion, sort_order: arxiv.SortOrder) -> list[str]:
+
+def _truncate_summary(summary: str, maxlen: int = 500) -> str:
+    """
+    Truncate a summary to maxlen characters or less.
+    
+    The string is trimmed from start to the right-most period before a (maxlen/2),
+    and from the leftmost period after b (len - a) to the end.
+    If such periods do not exist, use nearest characters to a, b.
+    """
+    if len(summary) <= maxlen:
+        return summary
+    
+    a = maxlen // 2
+    b = len(summary) - a
+    
+    # Find right-most period before position a
+    left_cut = summary.rfind('.', 0, a)
+    if left_cut == -1:
+        # No period found, use position a
+        left_cut = a
+    else:
+        # Include the period
+        left_cut = left_cut + 1
+    
+    # Find left-most period after position b
+    right_cut = summary.find('.', b)
+    if right_cut == -1:
+        # No period found, use position b
+        right_cut = b
+    
+    truncated = summary[:left_cut].rstrip() + "...[TRUNCATED]..." + summary[right_cut:].lstrip()
+    
+    return truncated
+
+
+def _arxiv_generic_search(
+    query: str,
+    k: int,
+    sort_criterion: arxiv.SortCriterion,
+    sort_order: arxiv.SortOrder,
+    truncate: bool = False
+) -> list[str]:
     search = arxiv.Search(
         query=query,
         max_results=k,
@@ -26,39 +66,66 @@ def _arxiv_generic_search(query: str, k: int, sort_criterion: arxiv.SortCriterio
 
     results = []
     for res in client.results(search):
-        arxiv_text = arxiv_template.render(arxiv=res)
+        # Apply truncation to summary if requested
+        if truncate:
+            arxiv_text = arxiv_template.render(arxiv=res, summary=_truncate_summary(res.summary))
+        else:
+            arxiv_text = arxiv_template.render(arxiv=res, summary=res.summary)
         results.append(arxiv_text)
-        
+
     return results
 
+
 # Agent Tools
+
 
 def arxiv_fetch_most_recent(query: str, k: int = 10) -> list[str]:
     """
     Fetch the most recent k papers from arXiv matching the query.
-    
+    Summaries are truncated for brevity.
+
     :param query: The search query string.
     :param k: Number of papers to fetch. Default is 10.
     :return: List of text details of the papers.
     :rtype: list[str]
     """
-    return _arxiv_generic_search(query, k, arxiv.SortCriterion.SubmittedDate, arxiv.SortOrder.Descending)
+    return _arxiv_generic_search(
+        query, k, arxiv.SortCriterion.SubmittedDate, arxiv.SortOrder.Descending, truncate=True,
+    )
+
 
 def arxiv_fetch_most_relevant(query: str, k: int = 10) -> list[str]:
     """
     Fetch the most relevant k papers from arXiv matching the query.
-    
+    Summaries are truncated for brevity.
+
     :param query: The search query string.
     :param k: Number of papers to fetch. Default is 10.
     :return: List of text details of the papers.
     :rtype: list[str]
     """
-    return _arxiv_generic_search(query, k, arxiv.SortCriterion.Relevance, arxiv.SortOrder.Descending)
+    return _arxiv_generic_search(
+        query, k, arxiv.SortCriterion.Relevance, arxiv.SortOrder.Descending, truncate=True,
+    )
+
+
+def arxiv_fetch_by_id(arxiv_id: str) -> str:
+    """
+    Fetch a single arXiv paper by its ID. Returns full summary, no truncation.
+
+    :param arxiv_id: The arXiv ID (e.g., "2301.12345").
+    :return: Text details of the paper with full summary.
+    :rtype: str
+    """
+    search = arxiv.Search(id_list=[arxiv_id])
+    res = next(client.results(search))
+    return arxiv_template.render(arxiv=res, summary=res.summary)
+
 
 def wikipedia_term_search(term: str, k: int = 5) -> list[str]:
     """
     Fetch the top k Wikipedia search results for the given term.
-    
+
     :param term: The search term.
     :param k: The maximum number of results to fetch. Default is 5.
     :return: List of Wikipedia article summaries.
@@ -67,7 +134,7 @@ def wikipedia_term_search(term: str, k: int = 5) -> list[str]:
     # Query wikipedia for the term
     results = []
     disamb_info = None
-    
+
     try:
         # Try to get the page summary directly
         summary = wikipedia.summary(term)
@@ -75,7 +142,7 @@ def wikipedia_term_search(term: str, k: int = 5) -> list[str]:
     except wikipedia.exceptions.DisambiguationError as e:
         # Store disambiguation info to include with summaries
         disamb_info = f"Disambiguation for '{term}':\n" + "\n".join(e.options[:k])
-        
+
         # Query each disambiguation option for summaries
         for option in e.options[:k]:
             try:
@@ -86,24 +153,28 @@ def wikipedia_term_search(term: str, k: int = 5) -> list[str]:
                     disamb_info = None
                 else:
                     results.append(summary)
-            except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
+            except (
+                wikipedia.exceptions.DisambiguationError,
+                wikipedia.exceptions.PageError,
+            ):
                 # If option also causes issues, skip it
                 pass
     except wikipedia.exceptions.PageError:
         # Page not found
         results.append(f"No Wikipedia page found for '{term}'")
-    
+
     # If we have disambiguation info but no successful summaries, return it as single line
     if disamb_info:
         results.append(disamb_info)
-    
-    return results[:k] 
-    
+
+    return results[:k]
+
+
 def generic_internet_term_search(term: str, k: int = 5) -> list[str]:
     """
     Perform a web search for the given term using a generic search engine.
     Returns the top k instant results. Snippets are limited to 1024 characters.
-    
+
     :param term: The search term.
     :param k: The maximum number of results to fetch. Default is 5.
     :return: List of search result snippets.
@@ -117,38 +188,52 @@ def generic_internet_term_search(term: str, k: int = 5) -> list[str]:
             results.append(snippet)
     return results
 
+
 class PaperCurationService(dspy.Signature):
     """
     You are a paper curation agent that evaluates and curates papers based on their summaries according to user preferences and input.
     You are provided with tools to search for similar papers, fetch wikipedia information and perform web searches.
     You are required to perform a brief survey of related literature, and provide remarks in your final answer.
     """
-    user_preference: str = dspy.InputField(desc="User preferences for paper curation, e.g., focus areas, methodologies, etc")
-    paper_information: str = dspy.InputField(desc="The paper information text to evaluate and curate.")
-    paper_decision: bool = dspy.OutputField(desc="Whether the paper is relevant to the user's preferences.")
-    paper_remarks: str = dspy.OutputField(desc="Brief remarks on the paper, including related literature survey and evaluation.")
+
+    user_preference: str = dspy.InputField(
+        desc="User preferences for paper curation, e.g., focus areas, methodologies, etc"
+    )
+    paper_information: str = dspy.InputField(
+        desc="The paper information text to evaluate and curate."
+    )
+    paper_decision: bool = dspy.OutputField(
+        desc="Whether the paper is relevant to the user's preferences."
+    )
+    paper_remarks: str = dspy.OutputField(
+        desc="Brief remarks on the paper, including related literature survey and evaluation."
+    )
 
 
-def new_instance(max_iters: int = 5) -> dspy.ReAct:
+def new_instance(max_iters: int = 6) -> dspy.ReAct:
     """
     Make a new ReAct agent instance.
-    :param max_iters: Maximum iterations for the agent. Default is 5.
+    :param max_iters: Maximum iterations for the agent. Default is 6.
     :return: A ReAct agent instance configured for paper curation.
     """
     return dspy.ReAct(
         PaperCurationService,
-        max_iters=5,
+        max_iters=max_iters,
         tools=[
-            arxiv_fetch_most_recent, arxiv_fetch_most_relevant, 
-            wikipedia_term_search, 
+            arxiv_fetch_most_recent,
+            arxiv_fetch_most_relevant,
+            arxiv_fetch_by_id,
+            wikipedia_term_search,
             generic_internet_term_search,
         ],
     )
+
 
 class TaskScaffold:
     """
     A class to handle paper curation task, given an agent.
     """
+
     user_prefs: str = ""
     output_path: str
     agent: dspy.ReAct
@@ -156,8 +241,14 @@ class TaskScaffold:
     log_trajectory: bool = False
     trajectory_file: TextIOWrapper | None = None
 
-    def __init__(self, user_prefs_path: str, output_path: str, agent: dspy.ReAct, log_trajectory: bool = False) -> None:
-        with open(user_prefs_path, 'r', encoding='utf-8') as f:
+    def __init__(
+        self,
+        user_prefs_path: str,
+        output_path: str,
+        agent: dspy.ReAct,
+        log_trajectory: bool = False,
+    ) -> None:
+        with open(user_prefs_path, "r", encoding="utf-8") as f:
             self.user_prefs = f.read()
         self.output_path = output_path
         self.output_file = None
@@ -167,10 +258,10 @@ class TaskScaffold:
 
     def __enter__(self) -> Self:
         """Open the output file and trajectory file (if enabled) for writing."""
-        self.output_file = open(self.output_path, 'w', encoding='utf-8')
+        self.output_file = open(self.output_path, "w", encoding="utf-8")
         if self.log_trajectory:
-            trajectory_path = self.output_path.rsplit('.', 1)[0] + '_trajectory.md'
-            self.trajectory_file = open(trajectory_path, 'w', encoding='utf-8')
+            trajectory_path = self.output_path.rsplit(".", 1)[0] + "_trajectory.md"
+            self.trajectory_file = open(trajectory_path, "w", encoding="utf-8")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -190,32 +281,42 @@ class TaskScaffold:
         :return: None
         """
         if self.output_file is None:
-            raise RuntimeError("TaskScaffold must be used as a context manager (with statement)")
+            raise RuntimeError(
+                "TaskScaffold must be used as a context manager (with statement)"
+            )
 
         paper_texts = papers.scrape()
-        for idx, paper_text in tqdm(enumerate(paper_texts), total=len(paper_texts), desc="Curating papers"):
+        for idx, paper_text in tqdm(
+            enumerate(paper_texts), total=len(paper_texts), desc="Curating papers"
+        ):
             result: dspy.Prediction = self.agent(
                 user_preference=self.user_prefs,
                 paper_information=paper_text,
             )
-            
+
             # Log trajectory if enabled
-            if self.log_trajectory and self.trajectory_file and hasattr(result, 'trajectory'):
-                num_steps = sum(1 for key in result.trajectory.keys() if key.startswith('thought_'))
+            if (
+                self.log_trajectory
+                and self.trajectory_file
+                and hasattr(result, "trajectory")
+            ):
+                num_steps = sum(
+                    1 for key in result.trajectory.keys() if key.startswith("thought_")
+                )
                 trajectory_md = trajectory_template.render(
                     trajectory=result.trajectory,
                     paper_idx=idx,
                     total_papers=len(paper_texts),
                     final_decision=result.paper_decision,
                     final_remarks=result.paper_remarks,
-                    num_steps=num_steps
+                    num_steps=num_steps,
                 )
                 self.trajectory_file.write(trajectory_md)
                 self.trajectory_file.write("\n\n")
                 self.trajectory_file.flush()
-            
+
             if result.paper_decision:
-                self.output_file.write(f"# Paper {idx+1} / {len(paper_texts)}\n")
+                self.output_file.write(f"# Paper {idx + 1} / {len(paper_texts)}\n")
                 self.output_file.write(f"## Information:\n{paper_text}\n\n")
                 self.output_file.write(f"## Remarks:\n{result.paper_remarks}\n")
                 self.output_file.write("\n\n")

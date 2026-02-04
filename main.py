@@ -25,7 +25,7 @@ def main(
     prefs_file: str = typer.Option("./userprefs.txt", "--prefs", "-i", help="User preferences file"),
     output_file: str = typer.Option("./report.md", "--output", "-o", help="Output report file"),
     max_tokens: int | None = typer.Option(None, "--max-tokens", "-t", help="Maximum tokens for LLM responses"),
-    max_iters:int = typer.Option(5, "--max-iters", "-n", help="Maximum iterations for the agent"),
+    max_iters:int = typer.Option(6, "--max-iters", "-n", help="Maximum iterations for the agent"),
     log_trajectory: bool = typer.Option(False, "--log-trajectory", "-l", help="Log agent trajectory (thoughts, actions, observations)")
 ):
     """
